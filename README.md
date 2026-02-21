@@ -2,7 +2,7 @@
 
 ## CLIF VERSION  
 
-2.1
+2.1.0
 
 ---
 
@@ -23,8 +23,6 @@ Final outputs include county-level ARF incidence estimates with uncertainty, nat
 
 ## Required CLIF tables and fields
 
-Please refer to the [CLIF data dictionary](https://clif-icu.com/data-dictionary), [CLIF Tools](https://clif-icu.com/tools), [ETL Guide](https://clif-icu.com/etl-guide), and [specific table contacts](https://github.com/clif-consortium/CLIF?tab=readme-ov-file#relational-clif) for additional information.
-
 The following CLIF tables are required:
 
 1. **patient**
@@ -35,28 +33,21 @@ The following CLIF tables are required:
    - `ethnicity_category`
    - (optional) `preferred_language`
 
-   **Why:** demographic completeness checks; age computation fallback.
-
 2. **hospitalization**
    - `patient_id`
    - `hospitalization_id`
    - `admission_dttm`
    - `discharge_dttm`
    - `age_at_admission`
-   - residence geography fields (site dependent; any of the following are sufficient):
+   - residence geography fields:
      - `county_code`
      - `census_tract`
-     - `zipcode_five_digit` / `zipcode_nine_digit`
 
-   **Why:** anchors the unit of analysis and enables county-of-residence assignment.
-
-3. **adt** (or equivalent location history table)
+3. **adt** 
    - `hospitalization_id`
    - `in_dttm`
    - `out_dttm`
-   - `location_category` (must support ICU identification)
-
-   **Why:** identifies ICU entry time (`first_icu_in`), ICU LOS, and ICU cohort membership.
+   - `location_category`
 
 4. **respiratory_support**
    - `hospitalization_id`
@@ -65,29 +56,21 @@ The following CLIF tables are required:
    - `mode_category`
    - `fio2_set`
 
-   **Why:** supports FiO₂ pairing and ARF clinical definition logic.
-
 5. **vitals**
    - `hospitalization_id`
    - `recorded_dttm`
-   - `vital_category` (needs `spo2`)
+   - `vital_category`
    - `vital_value`
-
-   **Why:** continuous SpO₂ density rule; hypoxemia on room air.
 
 6. **labs**
    - `hospitalization_id`
    - `lab_result_dttm`
-   - `lab_category` (needs `po2_arterial`, `pco2_arterial`, `ph_arterial`)
-   - numeric value field (site dependent; e.g., `lab_value_numeric`)
-
-   **Why:** PaO₂/FiO₂ ratio; hypercapnia pairing (pCO₂ + pH).
+   - `lab_category`
+   - `lab_value_numeric`
 
 7. **hospital_diagnosis**
    - `hospitalization_id`
    - `diagnosis_code`
-
-   **Why:** perioperative control cohort identification (J95.82–J95.84).
 
 ## External Data Requirements (Non-CLIF)
 
@@ -97,6 +80,8 @@ This project additionally requires:
 - County-level annual average PM2.5 concentrations
 - County-level annual average NO2 concentrations
 - Optional: urbanicity, hospital density, distance to CLIF site (for coverage modeling)
+
+But these tables are not necessary for the sites to have. They will be used during the analysis after the CLIF run.
 
 ---
 
@@ -179,9 +164,7 @@ Follow instructions in the [config/README.md](config/README.md) file to specify:
 
 - Data paths
 - Study years
-- Pollution exposure files
 - Output directories
-- Model options (e.g., SPDE mesh resolution, covariate inclusion)
 
 **Note:** If using `01_run_cohort_id_app.R`, this step is optional.
 
@@ -193,7 +176,6 @@ Follow instructions in the [config/README.md](config/README.md) file to specify:
 
 Run: [code/00_renv_restore.R]
 
-
 This will restore all required packages, including:
 - INLA
 - sf
@@ -201,9 +183,6 @@ This will restore all required packages, including:
 - data.table
 - spdep
 - terra
-
----
-
 
 ---
 
@@ -220,23 +199,6 @@ The workflow proceeds in the following order:
    - Compute total ICU admissions by county-year
    - Compute ARF admissions by county-year
    - Compute ARF mortality counts
-
-3. **Merge External Data**
-   - ACS population
-   - PM2.5
-   - NO2
-   - Coverage predictors
-
-4. **Modeling**
-   - Fit ICU coverage model
-   - Fit ARF incidence model
-   - Fit ARF mortality model (optional)
-   - Generate posterior summaries
-
-5. **Attributable Burden Estimation**
-   - Counterfactual pollution prediction
-   - Excess ARF cases
-   - Excess ARF deaths
 
 Detailed instructions are provided in: [code/README.md]
 
