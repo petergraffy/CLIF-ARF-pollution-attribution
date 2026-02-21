@@ -27,89 +27,67 @@ Please refer to the [CLIF data dictionary](https://clif-icu.com/data-dictionary)
 
 The following CLIF tables are required:
 
-### 1. **patient**
-- `patient_id`
-- `race_category`
-- `ethnicity_category`
-- `sex_category`
-- `zip_code` or geographic identifier enabling county assignment  
+1. **patient**
+   - `patient_id`
+   - `birth_date`
+   - `sex_category`
+   - `race_category`
+   - `ethnicity_category`
+   - (optional) `preferred_language`
 
-**Rationale:** Required to assign county of residence and perform demographic poststratification using ACS distributions.
+   **Why:** demographic completeness checks; age computation fallback.
 
----
+2. **hospitalization**
+   - `patient_id`
+   - `hospitalization_id`
+   - `admission_dttm`
+   - `discharge_dttm`
+   - `age_at_admission`
+   - residence geography fields (site dependent; any of the following are sufficient):
+     - `county_code`
+     - `census_tract`
+     - `zipcode_five_digit` / `zipcode_nine_digit`
 
-### 2. **hospitalization**
-- `patient_id`
-- `hospitalization_id`
-- `admission_dttm`
-- `discharge_dttm`
-- `age_at_admission`
+   **Why:** anchors the unit of analysis and enables county-of-residence assignment.
 
-**Rationale:** Defines ICU admissions, enables annual aggregation, and supports age-based stratification.
+3. **adt** (or equivalent location history table)
+   - `hospitalization_id`
+   - `in_dttm`
+   - `out_dttm`
+   - `location_category` (must support ICU identification)
 
----
+   **Why:** identifies ICU entry time (`first_icu_in`), ICU LOS, and ICU cohort membership.
 
-### 3. **location**
-- `hospitalization_id`
-- `location_category`
-- `location_start_dttm`
-- `location_end_dttm`
+4. **respiratory_support**
+   - `hospitalization_id`
+   - `recorded_dttm`
+   - `device_category`
+   - `mode_category`
+   - `fio2_set`
 
-**Rationale:** Identifies ICU encounters and determines ICU admission counts by county-year.
+   **Why:** supports FiO₂ pairing and ARF clinical definition logic.
 
----
+5. **vitals**
+   - `hospitalization_id`
+   - `recorded_dttm`
+   - `vital_category` (needs `spo2`)
+   - `vital_value`
 
-### 4. **respiratory_support**
-- `hospitalization_id`
-- `recorded_dttm`
-- `device_category`
-- `mode_category`
-- `fio2_set`
-- `peep_set`
-- `resp_rate_set`
-- `resp_rate_obs`
+   **Why:** continuous SpO₂ density rule; hypoxemia on room air.
 
-**Rationale:** Used to define physiologically grounded ARF criteria based on oxygen and ventilatory support.
+6. **labs**
+   - `hospitalization_id`
+   - `lab_result_dttm`
+   - `lab_category` (needs `po2_arterial`, `pco2_arterial`, `ph_arterial`)
+   - numeric value field (site dependent; e.g., `lab_value_numeric`)
 
----
+   **Why:** PaO₂/FiO₂ ratio; hypercapnia pairing (pCO₂ + pH).
 
-### 5. **vitals**
-- `hospitalization_id`
-- `recorded_dttm`
-- `vital_category`
-- `vital_value`
+7. **hospital_diagnosis**
+   - `hospitalization_id`
+   - `diagnosis_code`
 
-Key categories:
-- `resp_rate`
-- `spo2`
-- `map`
-- `sbp`
-- `dbp`
-
-**Rationale:** Supports ARF phenotyping and severity characterization.
-
----
-
-### 6. **labs**
-- `hospitalization_id`
-- `lab_result_dttm`
-- `lab_category`
-- `lab_value`
-
-Key categories:
-- `lactate`
-
-**Rationale:** Used for severity adjustment and sensitivity analyses.
-
----
-
-### 7. **discharge disposition / mortality**
-- `hospitalization_id`
-- in-hospital mortality indicator
-
-**Rationale:** Required for ARF mortality modeling and pollution-attributable death estimation.
-
----
+   **Why:** perioperative control cohort identification (J95.82–J95.84).
 
 ## External Data Requirements (Non-CLIF)
 
@@ -124,24 +102,53 @@ This project additionally requires:
 
 ## Cohort Identification
 
-### Inclusion Criteria
-- Adult ICU admissions occurring between January 1, 2018 and December 31, 2024
-- Valid county-of-residence assignment
-- ICU encounters identified using CLIF location data
+**Inclusion criteria**:
 
-### ARF Definition
-ARF will be defined using physiologically grounded criteria incorporating:
-- Invasive mechanical ventilation  
-- Non-invasive ventilation  
-- High-flow oxygen support  
-- Elevated oxygen requirements and respiratory parameters  
+1.  Adult patients (≥18 years) admitted to ICU between 2018–2024.
+2.  At least one of the following criteria of acute respiratory failure
+    is met:
+    -   Acute hypoxemic respiratory failure (any one of the following)
+        -   SpO2 less than 90% on room air
+        -   PaO2 of 60 mm Hg or less on room air
+        -   PaO2–FiO2 ratio of 300 or less (on any amount of FiO2)
+    -   Acute hypercapnic respiratory failure (both of the following)
+        -   PaCO2 of 45 mm Hg or more AND
+        -   Arterial pH \< 7.35
+3.  Available ABG and/or continuous pulse oximetry data within ±24h of
+    ICU admission.
+4.  Residential census tract and county code for environmental data linkage.
 
-Diagnosis codes alone will not define ARF.
+***-\> Note that mixed hypoxic and hypercapnic respiratory failure is
+common and should be accounted for.***
 
-### Exclusion Criteria
-- Missing key demographic or geographic identifiers
-- Non-ICU encounters
-- Pediatric admissions (if applicable)
+***-\> Also note that for SpO2 and PaO2, these numbers are directly
+affected by supplemental oxygen (FiO2) via whatever delivery mechanism.
+The definitions for ARF we choose for these values will be on room air
+(21% FiO2). P/F ratio can define ARF even on supplemental oxygen.***
+
+**Exclusion criteria** 
+- Missing key demographic data (age, sex, race). 
+- Hospitalizations \<24 hours in ICU. 
+- Repeat ICU stays within same hospitalization (only first considered for primary analysis).
+
+**Bibliography for definitions of ARF**
+
+1\. Lagina, M. & Valley, T. S. Diagnosis and Management of Acute
+Respiratory Failure. Critical Care Clinics 40, 235–253 (2024).
+
+2\. Baldomero, A. K. et al. Effectiveness and Harms of High-Flow Nasal
+Oxygen for Acute Respiratory Failure: An Evidence Report for a Clinical
+Guideline From the American College of Physicians. Ann Intern Med 174,
+952–966 (2021).
+
+3\. RENOVATE Investigators and the BRICNet Authors et al. High-Flow
+Nasal Oxygen vs Noninvasive Ventilation in Patients With Acute
+Respiratory Failure: The RENOVATE Randomized Clinical Trial. JAMA 333,
+875 (2025).
+
+4\. Mirabile, V. S., Shebl, E., Sankari, A. & Burns, B. Respiratory
+Failure in Adults. in StatPearls (StatPearls Publishing, Treasure Island
+(FL), 2025).
 
 ---
 
@@ -159,7 +166,6 @@ The final project outputs will include:
 All final outputs will be saved in: [output/final]
 
 Intermediate modeling objects (INLA outputs, posterior samples) will be stored in: [output/models]
-
 
 ---
 
