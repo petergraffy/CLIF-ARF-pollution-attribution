@@ -8,7 +8,7 @@
 
 ## Objective
 
-This project estimates the national burden of acute respiratory failure (ARF) using incomplete ICU network data from the CLIF consortium. Because CLIF captures ICU admissions from 44 hospitals across 10 health systems, observed ARF counts represent a subset of all ICU events nationally. We implement a Bayesian coverage-corrected geospatial modeling framework to:
+This project estimates the national burden of pollution-attributable acute respiratory failure (ARF) using incomplete ICU network data from the CLIF consortium. Because CLIF captures ICU admissions from 44 hospitals across 10 health systems, observed ARF counts represent a subset of all ICU events nationally. We implement a Bayesian coverage-corrected geospatial modeling framework to:
 
 1. Estimate county-level ICU admission coverage by CLIF  
 2. Infer true county-level ARF incidence rates per capita  
@@ -17,11 +17,11 @@ This project estimates the national burden of acute respiratory failure (ARF) us
 
 This framework treats ICU utilization and ARF incidence as latent processes and explicitly accounts for incomplete ICU coverage using county-of-residence linkage and all ICU admissions as an anchoring process.
 
-Final outputs include county-level ARF incidence estimates with uncertainty, national burden estimates, and pollution-attributable ARF burden summaries.
+Final outputs from this work include county-level ARF incidence estimates with uncertainty, national burden estimates, and pollution-attributable ARF burden summaries.
 
 ---
 
-## Required CLIF tables and fields
+## FOR CLIF RUN: Required CLIF tables and fields
 
 The following CLIF tables are required:
 
@@ -41,7 +41,6 @@ The following CLIF tables are required:
    - `age_at_admission`
    - residence geography fields:
      - `county_code`
-     - `census_tract`
 
 3. **adt** 
    - `hospitalization_id`
@@ -72,7 +71,7 @@ The following CLIF tables are required:
    - `hospitalization_id`
    - `diagnosis_code`
 
-## External Data Requirements (Non-CLIF)
+## NOT FOR CLIF SITES: External Data Requirements (Non-CLIF)
 
 This project additionally requires:
 
@@ -101,20 +100,11 @@ But these tables are not necessary for the sites to have. They will be used duri
         -   Arterial pH \< 7.35
 3.  Available ABG and/or continuous pulse oximetry data within ±24h of
     ICU admission.
-4.  Residential census tract and county code for environmental data linkage.
-
-***-\> Note that mixed hypoxic and hypercapnic respiratory failure is
-common and should be accounted for.***
-
-***-\> Also note that for SpO2 and PaO2, these numbers are directly
-affected by supplemental oxygen (FiO2) via whatever delivery mechanism.
-The definitions for ARF we choose for these values will be on room air
-(21% FiO2). P/F ratio can define ARF even on supplemental oxygen.***
+4.  Residential county code for environmental data linkage.
 
 **Exclusion criteria** 
-- Missing key demographic data (age, sex, race). 
+- Missing key geographic data county code. 
 - Hospitalizations \<24 hours in ICU. 
-- Repeat ICU stays within same hospitalization (only first considered for primary analysis).
 
 **Bibliography for definitions of ARF**
 
@@ -137,7 +127,7 @@ Failure in Adults. in StatPearls (StatPearls Publishing, Treasure Island
 
 ---
 
-## Expected Results
+## Expected Project Results
 
 The final project outputs will include:
 
@@ -148,13 +138,9 @@ The final project outputs will include:
 5. Estimates of excess ARF cases attributable to PM2.5 and NO2
 6. Estimates of pollution-attributable ARF mortality (secondary analysis)
 
-All final outputs will be saved in: [output/final]
-
-Intermediate modeling objects (INLA outputs, posterior samples) will be stored in: [output/models]
-
 ---
 
-## Detailed Instructions for Running the Project
+## Detailed Instructions for CLIF Sites Running the Project
 
 ---
 
@@ -162,53 +148,40 @@ Intermediate modeling objects (INLA outputs, posterior samples) will be stored i
 
 Follow instructions in the [config/README.md](config/README.md) file to specify:
 
-- Data paths
-- Study years
-- Output directories
-
-**Note:** If using `01_run_cohort_id_app.R`, this step is optional.
+- repo path
+- tables path
+- site name
+- file type
 
 ---
 
 ## 2. Set Up the Project Environment
 
-### R Environment (Primary)
+### R Environment
 
 Run: [code/00_renv_restore.R]
 
-This will restore all required packages, including:
-- INLA
-- sf
-- tidyverse
-- data.table
-- spdep
-- terra
+This will restore all required packages.
 
 ---
 
 ## 3. Run Code
 
-The workflow proceeds in the following order:
+The workflow proceeds in the following order within `01_cohort_identification`:
 
 1. **Cohort Identification**
    - Extract ICU admissions
    - Assign county of residence
-   - Identify ARF cases
+   - Identify ARF cases and mortalities
 
 2. **County-Year Aggregation**
    - Compute total ICU admissions by county-year
    - Compute ARF admissions by county-year
    - Compute ARF mortality counts
+   
+3. **CONSORT-style inclusion/exclusion table**
 
 Detailed instructions are provided in: [code/README.md]
-
----
-
-## Example Repositories
-
-- [CLIF Adult Sepsis Events](https://github.com/08wparker/CLIF_sepsis)
-- [CLIF Eligibility for Mobilization](https://github.com/kaveriC/CLIF-eligibility-for-mobilization)
-- [CLIF Variation in Ventilation](https://github.com/ingra107/clif_vent_variation)
 
 ---
 

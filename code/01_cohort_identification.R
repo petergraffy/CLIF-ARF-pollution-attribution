@@ -58,12 +58,13 @@ MIN_ICU_LOS_H   <- 24     # ICU LOS threshold for inclusion
 # If TRUE, enforce demo presence (age, sex, race) and geo presence before counting A/Y/D
 ENFORCE_DEMO_GEO_FILTERS <- TRUE
 
-dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+out_dir <- file.path("output", "final")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 export_stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
 
-out_site_county_year      <- file.path(OUT_DIR, glue("site_county_year_{site_name}_{export_stamp}.csv"))
-out_site_county_year_as   <- file.path(OUT_DIR, glue("site_county_year_age_sex_{site_name}_{export_stamp}.csv"))
-out_site_qc               <- file.path(OUT_DIR, glue("site_qc_summary_{site_name}_{export_stamp}.csv"))
+out_site_county_year      <- file.path(out_dir, glue("site_county_year_{site_name}_{export_stamp}.csv"))
+out_site_county_year_as   <- file.path(out_dir, glue("site_county_year_age_sex_{site_name}_{export_stamp}.csv"))
+out_site_qc               <- file.path(out_dir, glue("site_qc_summary_{site_name}_{export_stamp}.csv"))
 
 # ------------------------------- 1) IO helpers ---------------------------------------------------
 
@@ -515,7 +516,7 @@ site_county_year_age_sex <- flags %>%
 # ------------------------------- 10) QC summary --------------------------------------------------
 
 qc <- tibble(
-  site_id = SITE_ID,
+  site_id = site_name,
   start_date = as.character(START_DATE),
   end_date   = as.character(END_DATE),
   
@@ -580,4 +581,123 @@ message("  - ", out_site_qc)
 
 # ------------------------------- 12) Optional: quick console sanity ------------------------------
 
-message(glue("Site {site_name}: base included ICU hosp = {qc$n_include_base}, ARF = {qc$n_include_arf}, in-hosp ARF deaths = {qc$n_arf_deaths_in_hosp}"))
+message(glue("Site {site_name}: base included ICU hosp = {qc$n_elig_icu}, ARF = {qc$n_arf}, in-hosp ARF deaths = {qc$n_arf_deaths_in_hosp}"))
+
+# =========================
+# CONSORT-style flow export
+# =========================
+
+# Helper: safe logical -> FALSE
+lf <- function(x) dplyr::coalesce(as.logical(x), FALSE)
+
+# Define step flags explicitly (KEEP THESE STABLE ACROSS SITES)
+consort_steps <- flags %>%
+  mutate(
+    step_01_candidates = TRUE,                                    # ICU candidates already in `flags`
+    step_02_adult      = lf(adult),
+    step_03_icu24h     = lf(icu_24h),
+    step_04_has_county = !is.na(county_fips),                     # county_fips you created
+    step_05_eligible   = lf(meets_data_rule),                     # ABG OR cont SpO2
+    step_06_arf        = lf(arf_criterion_met)                    # phys ARF criteria
+  ) %>%
+  summarise(
+    n_step_01_candidates = n(),
+    n_step_02_adult      = sum(step_01_candidates & step_02_adult),
+    n_step_03_icu24h     = sum(step_01_candidates & step_02_adult & step_03_icu24h),
+    n_step_04_has_county = sum(step_01_candidates & step_02_adult & step_03_icu24h & step_04_has_county),
+    n_step_05_eligible   = sum(step_01_candidates & step_02_adult & step_03_icu24h & step_04_has_county & step_05_eligible),
+    n_step_06_arf        = sum(step_01_candidates & step_02_adult & step_03_icu24h & step_04_has_county & step_05_eligible & step_06_arf)
+  ) %>%
+  tidyr::pivot_longer(everything(), names_to = "step", values_to = "remaining") %>%
+  mutate(
+    step_order = dplyr::case_when(
+      step == "n_step_01_candidates" ~ 1L,
+      step == "n_step_02_adult"      ~ 2L,
+      step == "n_step_03_icu24h"     ~ 3L,
+      step == "n_step_04_has_county" ~ 4L,
+      step == "n_step_05_eligible"   ~ 5L,
+      step == "n_step_06_arf"        ~ 6L,
+      TRUE ~ NA_integer_
+    ),
+    step_label = dplyr::case_when(
+      step == "n_step_01_candidates" ~ "ICU candidates (in years window)",
+      step == "n_step_02_adult"      ~ "Age ≥ 18",
+      step == "n_step_03_icu24h"     ~ "ICU LOS ≥ 24h",
+      step == "n_step_04_has_county" ~ "County FIPS present",
+      step == "n_step_05_eligible"   ~ "Eligible physiology (ABG or cont SpO2)",
+      step == "n_step_06_arf"        ~ "Meets physiologic ARF criteria",
+      TRUE ~ step
+    )
+  ) %>%
+  arrange(step_order) %>%
+  mutate(
+    excluded_at_step = dplyr::lag(remaining, default = remaining[1]) - remaining,
+    excluded_at_step = dplyr::if_else(step_order == 1L, NA_real_, as.numeric(excluded_at_step))
+  ) %>%
+  mutate(
+    site_id = site_name,
+    run_date = format(Sys.Date(), "%Y-%m-%d")
+  ) %>%
+  dplyr::select(site_id, run_date, step_order, step_label, remaining, excluded_at_step)
+
+# Save (use your existing save_tbl() helper if present)
+if (exists("save_tbl")) {
+  save_tbl(consort_steps, "consort/consort_steps")
+} else {
+  out_dir2 <- file.path("output", "final", "consort")
+  dir.create(out_dir2, recursive = TRUE, showWarnings = FALSE)
+  readr::write_csv(consort_steps, file.path(out_dir2, paste0("consort_steps_", site_name, "_", format(Sys.Date(), "%Y%m%d"), ".csv")))
+}
+
+# =========================
+# CONSORT exclusion reasons
+# =========================
+
+consort_reasons <- flags %>%
+  mutate(
+    fail_under18        = !lf(adult),
+    fail_icu_lt24h       = lf(adult) & !lf(icu_24h),
+    fail_missing_county  = lf(adult) & lf(icu_24h) & is.na(county_fips),
+    fail_not_eligible    = lf(adult) & lf(icu_24h) & !is.na(county_fips) & !lf(meets_data_rule),
+    fail_not_arf         = lf(adult) & lf(icu_24h) & !is.na(county_fips) & lf(meets_data_rule) & !lf(arf_criterion_met),
+    
+    # first-fail in step order (mutually exclusive)
+    exclusion_reason = dplyr::case_when(
+      fail_under18       ~ "Under 18",
+      fail_icu_lt24h      ~ "ICU LOS < 24h",
+      fail_missing_county ~ "Missing county FIPS",
+      fail_not_eligible   ~ "No ABG or continuous SpO2 (±24h)",
+      fail_not_arf        ~ "No physiologic ARF criteria (±24h)",
+      TRUE                ~ "Included"
+    )
+  ) %>%
+  count(exclusion_reason, name = "n") %>%
+  mutate(
+    site_id = site_name,
+    run_date = format(Sys.Date(), "%Y-%m-%d")
+  ) %>%
+  arrange(desc(n))
+
+if (exists("save_tbl")) {
+  save_tbl(consort_reasons, "consort/consort_reasons")
+} else {
+  out_dir2 <- file.path("output", "final", "consort")
+  dir.create(out_dir2, recursive = TRUE, showWarnings = FALSE)
+  readr::write_csv(consort_reasons, file.path(out_dir2, paste0("consort_reasons_", site_name, "_", format(Sys.Date(), "%Y%m%d"), ".csv")))
+}
+
+message("\n",
+        "------------------------------------------------------------------\n",
+        "✔ CLIF site data extraction complete: ", site_name, "\n",
+        "------------------------------------------------------------------\n",
+        "\n",
+        "All aggregated county-level outputs have been successfully generated.\n",
+        "\n",
+        "Action required:\n",
+        "Upload the full 'output/final' directory to the shared Box folder.\n",
+        "\n",
+        "Only aggregated data are included. No patient-level information is present.\n",
+        "\n",
+        "If the script terminated without errors, your site’s contribution is complete.\n",
+        "------------------------------------------------------------------\n"
+)
