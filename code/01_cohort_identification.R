@@ -686,6 +686,213 @@ if (exists("save_tbl")) {
   readr::write_csv(consort_reasons, file.path(out_dir2, paste0("consort_reasons_", site_name, "_", format(Sys.Date(), "%Y%m%d"), ".csv")))
 }
 
+# =========================
+# TABLE 1: ARF cohort descriptive statistics
+# =========================
+
+out_dir_table1 <- file.path("output", "final", "table1")
+dir.create(out_dir_table1, recursive = TRUE, showWarnings = FALSE)
+
+# ARF analytic cohort (1 row per hospitalization)
+table1_dat <- flags %>%
+  filter(include_arf) %>%
+  mutate(
+    sex_category = coalesce(as.character(sex_category), "Missing"),
+    race_category = coalesce(as.character(race_category), "Missing"),
+    ethnicity_category = coalesce(as.character(ethnicity_category), "Missing"),
+    age_band = coalesce(as.character(age_band), "Missing"),
+    county_fips = coalesce(as.character(county_fips), "Missing")
+  )
+
+# -------------------------
+# 1) Overall summary
+# -------------------------
+table1_overall <- tibble(
+  site_name = site_name,
+  n_arf = nrow(table1_dat),
+  
+  age_mean = mean(table1_dat$age_years, na.rm = TRUE),
+  age_sd = sd(table1_dat$age_years, na.rm = TRUE),
+  age_median = median(table1_dat$age_years, na.rm = TRUE),
+  age_p25 = unname(quantile(table1_dat$age_years, 0.25, na.rm = TRUE)),
+  age_p75 = unname(quantile(table1_dat$age_years, 0.75, na.rm = TRUE)),
+  
+  icu_los_hours_mean = mean(table1_dat$icu_los_hours, na.rm = TRUE),
+  icu_los_hours_sd = sd(table1_dat$icu_los_hours, na.rm = TRUE),
+  icu_los_hours_median = median(table1_dat$icu_los_hours, na.rm = TRUE),
+  icu_los_hours_p25 = unname(quantile(table1_dat$icu_los_hours, 0.25, na.rm = TRUE)),
+  icu_los_hours_p75 = unname(quantile(table1_dat$icu_los_hours, 0.75, na.rm = TRUE)),
+  
+  n_hypoxemic = sum(table1_dat$any_hypox, na.rm = TRUE),
+  pct_hypoxemic = 100 * mean(table1_dat$any_hypox, na.rm = TRUE),
+  
+  n_hypercapnic = sum(table1_dat$any_hypercap, na.rm = TRUE),
+  pct_hypercapnic = 100 * mean(table1_dat$any_hypercap, na.rm = TRUE),
+  
+  n_mixed = sum(table1_dat$mixed_arf, na.rm = TRUE),
+  pct_mixed = 100 * mean(table1_dat$mixed_arf, na.rm = TRUE),
+  
+  n_in_hosp_death = sum(table1_dat$in_hosp_death, na.rm = TRUE),
+  pct_in_hosp_death = 100 * mean(table1_dat$in_hosp_death, na.rm = TRUE),
+  
+  n_30d_death = sum(table1_dat$death_30d, na.rm = TRUE),
+  pct_30d_death = 100 * mean(table1_dat$death_30d, na.rm = TRUE),
+  
+  n_has_abg = sum(table1_dat$has_abg, na.rm = TRUE),
+  pct_has_abg = 100 * mean(table1_dat$has_abg, na.rm = TRUE),
+  
+  n_has_cont_spo2 = sum(table1_dat$has_cont_spo2, na.rm = TRUE),
+  pct_has_cont_spo2 = 100 * mean(table1_dat$has_cont_spo2, na.rm = TRUE)
+)
+
+readr::write_csv(
+  table1_overall,
+  file.path(out_dir_table1, glue("table1_overall_{site_name}_{export_stamp}.csv")),
+  na = ""
+)
+
+# -------------------------
+# 2) Categorical distributions
+# -------------------------
+make_cat_tbl <- function(df, var, var_name) {
+  df %>%
+    count(value = .data[[var]], name = "n") %>%
+    mutate(
+      pct = 100 * n / sum(n),
+      variable = var_name,
+      site_name = site_name
+    ) %>%
+    select(site_name, variable, value, n, pct) %>%
+    arrange(desc(n))
+}
+
+table1_sex <- make_cat_tbl(table1_dat, "sex_category", "sex_category")
+table1_race <- make_cat_tbl(table1_dat, "race_category", "race_category")
+table1_ethnicity <- make_cat_tbl(table1_dat, "ethnicity_category", "ethnicity_category")
+table1_age_band <- make_cat_tbl(table1_dat, "age_band", "age_band")
+
+readr::write_csv(
+  table1_sex,
+  file.path(out_dir_table1, glue("table1_sex_{site_name}_{export_stamp}.csv")),
+  na = ""
+)
+
+readr::write_csv(
+  table1_race,
+  file.path(out_dir_table1, glue("table1_race_{site_name}_{export_stamp}.csv")),
+  na = ""
+)
+
+readr::write_csv(
+  table1_ethnicity,
+  file.path(out_dir_table1, glue("table1_ethnicity_{site_name}_{export_stamp}.csv")),
+  na = ""
+)
+
+readr::write_csv(
+  table1_age_band,
+  file.path(out_dir_table1, glue("table1_age_band_{site_name}_{export_stamp}.csv")),
+  na = ""
+)
+
+# -------------------------
+# 3) Formatted long Table 1
+# -------------------------
+fmt_num <- function(x, digits = 1) format(round(x, digits), nsmall = digits, trim = TRUE)
+
+table1_long <- bind_rows(
+  tibble(
+    site_name = site_name,
+    characteristic = "ARF hospitalizations, n",
+    value = as.character(nrow(table1_dat))
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "Age, mean (SD), y",
+    value = paste0(fmt_num(mean(table1_dat$age_years, na.rm = TRUE)),
+                   " (", fmt_num(sd(table1_dat$age_years, na.rm = TRUE)), ")")
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "Age, median [IQR], y",
+    value = paste0(
+      fmt_num(median(table1_dat$age_years, na.rm = TRUE)),
+      " [",
+      fmt_num(quantile(table1_dat$age_years, 0.25, na.rm = TRUE)),
+      ", ",
+      fmt_num(quantile(table1_dat$age_years, 0.75, na.rm = TRUE)),
+      "]"
+    )
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "ICU LOS, median [IQR], h",
+    value = paste0(
+      fmt_num(median(table1_dat$icu_los_hours, na.rm = TRUE)),
+      " [",
+      fmt_num(quantile(table1_dat$icu_los_hours, 0.25, na.rm = TRUE)),
+      ", ",
+      fmt_num(quantile(table1_dat$icu_los_hours, 0.75, na.rm = TRUE)),
+      "]"
+    )
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "Hypoxemic ARF, n (%)",
+    value = paste0(
+      sum(table1_dat$any_hypox, na.rm = TRUE), " (",
+      fmt_num(100 * mean(table1_dat$any_hypox, na.rm = TRUE)), "%)"
+    )
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "Hypercapnic ARF, n (%)",
+    value = paste0(
+      sum(table1_dat$any_hypercap, na.rm = TRUE), " (",
+      fmt_num(100 * mean(table1_dat$any_hypercap, na.rm = TRUE)), "%)"
+    )
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "Mixed ARF, n (%)",
+    value = paste0(
+      sum(table1_dat$mixed_arf, na.rm = TRUE), " (",
+      fmt_num(100 * mean(table1_dat$mixed_arf, na.rm = TRUE)), "%)"
+    )
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "In-hospital death, n (%)",
+    value = paste0(
+      sum(table1_dat$in_hosp_death, na.rm = TRUE), " (",
+      fmt_num(100 * mean(table1_dat$in_hosp_death, na.rm = TRUE)), "%)"
+    )
+  ),
+  tibble(
+    site_name = site_name,
+    characteristic = "30-day death, n (%)",
+    value = paste0(
+      sum(table1_dat$death_30d, na.rm = TRUE), " (",
+      fmt_num(100 * mean(table1_dat$death_30d, na.rm = TRUE)), "%)"
+    )
+  )
+)
+
+readr::write_csv(
+  table1_long,
+  file.path(out_dir_table1, glue("table1_formatted_{site_name}_{export_stamp}.csv")),
+  na = ""
+)
+
+message("✅ Wrote Table 1 outputs:")
+message("  - ", file.path(out_dir_table1, glue("table1_overall_{site_name}_{export_stamp}.csv")))
+message("  - ", file.path(out_dir_table1, glue("table1_sex_{site_name}_{export_stamp}.csv")))
+message("  - ", file.path(out_dir_table1, glue("table1_race_{site_name}_{export_stamp}.csv")))
+message("  - ", file.path(out_dir_table1, glue("table1_ethnicity_{site_name}_{export_stamp}.csv")))
+message("  - ", file.path(out_dir_table1, glue("table1_age_band_{site_name}_{export_stamp}.csv")))
+message("  - ", file.path(out_dir_table1, glue("table1_formatted_{site_name}_{export_stamp}.csv")))
+
+
 message("\n",
         "------------------------------------------------------------------\n",
         "✔ CLIF site data extraction complete: ", site_name, "\n",
