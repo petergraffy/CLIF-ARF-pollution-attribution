@@ -1,36 +1,30 @@
-# R specific gitignores
-.Rprofile
+# R specific
 .Rhistory
-.Rprofile
 .Ruserdata
 .DS_Store
 *.Rproj
 .Rproj.user
-
-## ignore the renv initialization file
-initialize_renv.R
-
-## ignore filtered CLIF tables stored as Rdata
 *.RData
+.Rprofile
 
-#ignore source CLIF_ files 
+# renv (not used — packages installed directly via 00)
+/renv
+
+# ignore source CLIF tables
 CLIF_*.parquet
 CLIF_*.csv
 CLIF_*.fst
 
-#ignore the identifier app
+# ignore the identifier app
 CLIF_cohort_identifier*
 
-# ignore file used to initialize renv when creating the template
-initialize_renv.R
-
-# ignore filtered CLIF tables stored as Rdata
-*.RData
-
-# ignore pdf reports and rendered html
+# ignore rendered reports
 *.pdf
 *.html
 
-#output files 
+# output files
 /output
 acs_estimates.csv
+
+# config (site-specific, not shared)
+config/config.json
