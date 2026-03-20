@@ -24,7 +24,6 @@ suppressPackageStartupMessages({
   library(purrr)
   library(readr)
   library(arrow)
-  library(fst)
   library(data.table)
   library(glue)
   library(janitor)
@@ -73,8 +72,13 @@ read_any <- function(path) {
   switch(ext,
          "csv"     = readr::read_csv(path, show_col_types = FALSE),
          "parquet" = arrow::read_parquet(path),
-         "fst"     = fst::read_fst(path, as.data.table = FALSE),
          stop("Unsupported extension: ", ext, " for path: ", path))
+}
+
+get_parquet_path <- function(tbl_base) {
+  wanted <- tolower(tbl_base)
+  if (!startsWith(wanted, "clif_")) wanted <- paste0("clif_", wanted)
+  file.path(tables_path, paste0(wanted, ".parquet"))
 }
 
 # Robust datetime parser (fast; avoids locale issues)
@@ -166,31 +170,8 @@ adt <- get_tbl_from_dir("clif_adt") %>%
     location_category
   )
 
-vitals <- get_tbl_from_dir("clif_vitals") %>%
-  transmute(
-    hospitalization_id,
-    recorded_dttm = safe_ts(recorded_dttm),
-    vital_category = tolower(vital_category),
-    vital_value
-  ) %>%
-  mutate(vital_value = suppressWarnings(as.numeric(vital_value)))
-
-labs <- get_tbl_from_dir("clif_labs") %>%
-  transmute(
-    hospitalization_id,
-    lab_result_dttm = safe_ts(lab_result_dttm),
-    lab_category = tolower(lab_category),
-    lab_value_numeric
-  ) %>%
-  mutate(lab_value_numeric = suppressWarnings(as.numeric(lab_value_numeric)))
-
-resp_support <- get_tbl_from_dir("clif_respiratory_support") %>%
-  transmute(
-    hospitalization_id,
-    recorded_dttm = safe_ts(recorded_dttm),
-    fio2_set
-  ) %>%
-  mutate(fio2_set = suppressWarnings(as.numeric(fio2_set)))
+# NOTE: vitals, labs, resp_support are loaded AFTER cohort identification (section 4b)
+# using arrow push-down predicates for memory efficiency
 
 # ------------------------------- 3) ICU index time per hospitalization ----------------------------
 
@@ -242,16 +223,64 @@ win <- base %>%
     win_end   = first_icu_in + dhours(WINDOW_H)
   )
 
+# ------------------------------- 4b) Load big tables filtered to cohort (arrow push-down) -------
+
+cohort_ids <- unique(base$hospitalization_id)
+message(glue("Loading vitals/labs/resp_support filtered to {length(cohort_ids)} cohort hospitalizations"))
+
+vitals <- arrow::open_dataset(get_parquet_path("clif_vitals")) %>%
+  filter(tolower(vital_category) == "spo2") %>%
+  select(hospitalization_id, recorded_dttm, vital_category, vital_value) %>%
+  collect() %>%
+  janitor::clean_names() %>%
+  filter(hospitalization_id %in% cohort_ids) %>%
+  mutate(vital_category = tolower(vital_category),
+         vital_value = suppressWarnings(as.numeric(vital_value)),
+         recorded_dttm = safe_ts(recorded_dttm))
+
+message(glue("  vitals (spo2 only): {nrow(vitals)} rows"))
+
+labs <- arrow::open_dataset(get_parquet_path("clif_labs")) %>%
+  filter(tolower(lab_category) %in% c("po2_arterial", "pco2_arterial", "ph_arterial")) %>%
+  select(hospitalization_id, lab_result_dttm, lab_category, lab_value_numeric) %>%
+  collect() %>%
+  janitor::clean_names() %>%
+  filter(hospitalization_id %in% cohort_ids) %>%
+  mutate(lab_category = tolower(lab_category),
+         lab_value_numeric = suppressWarnings(as.numeric(lab_value_numeric)),
+         lab_result_dttm = safe_ts(lab_result_dttm))
+
+message(glue("  labs (po2/pco2/ph): {nrow(labs)} rows"))
+
+resp_support <- arrow::open_dataset(get_parquet_path("clif_respiratory_support")) %>%
+  select(hospitalization_id, recorded_dttm, fio2_set) %>%
+  collect() %>%
+  janitor::clean_names() %>%
+  filter(hospitalization_id %in% cohort_ids) %>%
+  mutate(fio2_set = suppressWarnings(as.numeric(fio2_set)),
+         recorded_dttm = safe_ts(recorded_dttm))
+
+message(glue("  resp_support: {nrow(resp_support)} rows"))
+
+# FiO2 normalization: convert percentage (0-100) to fraction (0-1) scale
+n_fio2_before <- sum(!is.na(resp_support$fio2_set))
+resp_support <- resp_support %>%
+  mutate(fio2_set = case_when(
+    fio2_set > 1 & fio2_set <= 100 ~ fio2_set / 100,  # percentage → fraction
+    fio2_set >= 0.21 & fio2_set <= 1 ~ fio2_set,       # already fraction
+    TRUE ~ NA_real_                                      # out of range → NA
+  ))
+n_fio2_after <- sum(!is.na(resp_support$fio2_set))
+message(glue("FiO2 normalization: {n_fio2_before} non-NA → {n_fio2_after} retained on 0-1 scale ({n_fio2_before - n_fio2_after} out-of-range removed)"))
+
 # ------------------------------- 5) Windowed signals --------------------------------------------
 
 vitals_win <- vitals %>%
-  filter(vital_category == "spo2") %>%
   inner_join(win, by = "hospitalization_id") %>%
   filter(recorded_dttm >= win_start, recorded_dttm <= win_end) %>%
   dplyr::select(hospitalization_id, recorded_dttm, spo2 = vital_value)
 
 labs_win <- labs %>%
-  filter(lab_category %in% c("po2_arterial","pco2_arterial","ph_arterial")) %>%
   inner_join(win, by = "hospitalization_id") %>%
   filter(lab_result_dttm >= win_start, lab_result_dttm <= win_end) %>%
   transmute(hospitalization_id, lab_result_dttm, lab_category, val = lab_value_numeric)
@@ -363,7 +392,6 @@ hyper_flags <- hyper_pairs %>%
 
 # Data availability: ABG OR continuous SpO2
 abg_avail <- labs_win %>%
-  filter(lab_category %in% c("po2_arterial","pco2_arterial","ph_arterial")) %>%
   distinct(hospitalization_id) %>%
   mutate(has_abg = TRUE)
 
@@ -421,12 +449,18 @@ flags <- flags %>%
 # ------------------------------- 8) Mortality definition (your logic) ----------------------------
 
 # last vital per hospitalization for discharge fallback
-vitals_last <- vitals %>%
+# NOTE: Uses ALL vital categories (not just SpO2) — the last recorded vital of
+# any type is the best proxy for "last sign of life" when approximating death time.
+# We load only (hospitalization_id, recorded_dttm) for memory efficiency.
+vitals_last <- arrow::open_dataset(get_parquet_path("clif_vitals")) %>%
+  select(hospitalization_id, recorded_dttm) %>%
+  collect() %>%
+  janitor::clean_names() %>%
   filter(hospitalization_id %in% flags$hospitalization_id) %>%
-  mutate(vital_recorded_ts = safe_ts(recorded_dttm)) %>%
-  filter(!is.na(vital_recorded_ts)) %>%
+  mutate(recorded_dttm = safe_ts(recorded_dttm)) %>%
+  filter(!is.na(recorded_dttm)) %>%
   group_by(hospitalization_id) %>%
-  summarise(last_vital_dttm = max(vital_recorded_ts), .groups = "drop")
+  summarise(last_vital_dttm = max(recorded_dttm), .groups = "drop")
 
 # Build final death timestamp per hospitalization
 final_outcome_times <- hospitalization %>%
