@@ -601,6 +601,143 @@ qc <- qc %>%
     n_arf         = sum(flags$include_arf, na.rm = TRUE)
   )
 
+# ================================================================================================
+# OFFSET MASKING CHUNK (DROP-IN)
+# Place this AFTER site_county_year and site_county_year_age_sex are created,
+# and BEFORE write_csv() is called for those two export tables.
+# ================================================================================================
+
+mask_version <- "mask_v20260320"
+offset_key_dir <- file.path("input", "offset_keys")
+
+offset_key_county_year_path <- file.path(
+  offset_key_dir,
+  "site_county_year",
+  paste0("offset_key_site_county_year_", site_name, "_", mask_version, ".csv")
+)
+
+offset_key_county_year_age_sex_path <- file.path(
+  offset_key_dir,
+  "site_county_year_age_sex",
+  paste0("offset_key_site_county_year_age_sex_", site_name, "_", mask_version, ".csv")
+)
+
+if (!file.exists(offset_key_county_year_path)) {
+  stop("Missing offset key file: ", offset_key_county_year_path)
+}
+if (!file.exists(offset_key_county_year_age_sex_path)) {
+  stop("Missing offset key file: ", offset_key_county_year_age_sex_path)
+}
+
+key_county_year <- readr::read_csv(offset_key_county_year_path, show_col_types = FALSE) %>%
+  mutate(
+    county_fips = as.character(county_fips),
+    year = as.integer(year),
+    offset_n = as.integer(offset_n),
+    site_name = as.character(site_name),
+    mask_version = as.character(mask_version)
+  )
+
+key_county_year_age_sex <- readr::read_csv(offset_key_county_year_age_sex_path, show_col_types = FALSE) %>%
+  mutate(
+    county_fips = as.character(county_fips),
+    year = as.integer(year),
+    age_band = as.character(age_band),
+    sex = as.character(sex),
+    offset_n = as.integer(offset_n),
+    site_name = as.character(site_name),
+    mask_version = as.character(mask_version)
+  )
+
+# -------------------------------
+# Mask site_county_year
+# -------------------------------
+
+site_county_year_obs <- site_county_year %>%
+  mutate(
+    county_fips = as.character(county_fips),
+    year = as.integer(year)
+  ) %>%
+  select(
+    county_fips, year,
+    A_all_ct, A_elig_ct, Y_ct, D_ct, D30_ct,
+    A_all_missing_county, A_elig_missing_county, Y_missing_county, D_missing_county,
+    first_date, last_date, coverage_days
+  )
+
+site_county_year <- key_county_year %>%
+  select(cell_id, county_fips, year, offset_n, mask_version) %>%
+  left_join(site_county_year_obs, by = c("county_fips", "year")) %>%
+  mutate(
+    site_name = site_name,
+    across(
+      .cols = c(
+        A_all_ct, A_elig_ct, Y_ct, D_ct, D30_ct,
+        A_all_missing_county, A_elig_missing_county, Y_missing_county, D_missing_county
+      ),
+      .fns = ~ coalesce(as.integer(.x), 0L)
+    ),
+    # add the same offset to all cell-level count fields in this table
+    A_all_ct              = A_all_ct + offset_n,
+    A_elig_ct             = A_elig_ct + offset_n,
+    Y_ct                  = Y_ct + offset_n,
+    D_ct                  = D_ct + offset_n,
+    D30_ct                = D30_ct + offset_n,
+    A_all_missing_county  = A_all_missing_county + offset_n,
+    A_elig_missing_county = A_elig_missing_county + offset_n,
+    Y_missing_county      = Y_missing_county + offset_n,
+    D_missing_county      = D_missing_county + offset_n
+  ) %>%
+  arrange(year, county_fips) %>%
+  select(
+    site_name, county_fips, year,
+    A_all_ct, A_elig_ct, Y_ct, D_ct, D30_ct,
+    A_all_missing_county, A_elig_missing_county, Y_missing_county, D_missing_county,
+    first_date, last_date, coverage_days,
+    mask_version
+  )
+
+# -------------------------------
+# Mask site_county_year_age_sex
+# -------------------------------
+
+site_county_year_age_sex_obs <- site_county_year_age_sex %>%
+  mutate(
+    county_fips = as.character(county_fips),
+    year = as.integer(year),
+    age_band = as.character(age_band),
+    sex = as.character(sex)
+  ) %>%
+  select(
+    county_fips, year, age_band, sex,
+    A_all_ctg, A_elig_ctg, Y_ctg, D_ctg
+  )
+
+site_county_year_age_sex <- key_county_year_age_sex %>%
+  select(cell_id, county_fips, year, age_band, sex, offset_n, mask_version) %>%
+  left_join(site_county_year_age_sex_obs, by = c("county_fips", "year", "age_band", "sex")) %>%
+  mutate(
+    site_name = site_name,
+    across(
+      .cols = c(A_all_ctg, A_elig_ctg, Y_ctg, D_ctg),
+      .fns = ~ coalesce(as.integer(.x), 0L)
+    ),
+    # add the same offset to all cell-level count fields in this table
+    A_all_ctg  = A_all_ctg + offset_n,
+    A_elig_ctg = A_elig_ctg + offset_n,
+    Y_ctg      = Y_ctg + offset_n,
+    D_ctg      = D_ctg + offset_n
+  ) %>%
+  arrange(year, county_fips, age_band, sex) %>%
+  select(
+    site_name, county_fips, year, age_band, sex,
+    A_all_ctg, A_elig_ctg, Y_ctg, D_ctg,
+    mask_version
+  )
+
+message("✅ Offset masking applied to site_county_year and site_county_year_age_sex")
+
+
 # ------------------------------- 11) Write outputs -----------------------------------------------
 
 # Important: these exports are aggregated only; no IDs.
