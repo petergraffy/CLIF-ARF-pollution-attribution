@@ -165,7 +165,21 @@ This will restore all required packages.
 
 ---
 
-## 3. Run Code
+## 3. Download Deterministic Masking Key Fragments
+
+Before running the export script, download this site's deterministic masking key fragments from the external key-generation website and place them in the repo-level [keys](/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARF-pollution-attribution/keys/README.md) folder.
+
+The script expects exactly one file from each family:
+
+- `key_county_year_Fragment_*.csv`
+- `key_county_year_age_sex_Fragment_*.csv`
+- `key_year_age_sex_race_ethnicity_Fragment_*.csv`
+
+These fragments should not be renamed unless the filename still matches the same pattern.
+
+---
+
+## 4. Run Code
 
 The workflow proceeds in the following order within `01_cohort_identification`:
 
@@ -178,6 +192,7 @@ The workflow proceeds in the following order within `01_cohort_identification`:
    - Compute total ICU admissions by county-year
    - Compute ARF admissions by county-year
    - Compute ARF mortality counts
+   - Apply deterministic masking using the key fragments in `keys/`
    - Compute masked post-stratification tables for age-sex and pooled demographic analyses
    
 3. **CONSORT-style inclusion/exclusion table**
@@ -189,7 +204,6 @@ Detailed instructions are provided in: [code/README.md]
 ## Summary
 
 This repository implements a novel coverage-corrected geospatial modeling framework to extend incomplete ICU network data to national estimates of ARF burden. By jointly modeling ICU coverage, ARF incidence, and environmental exposures using Bayesian INLA-SPDE methods, this project produces county-level and national estimates of ARF and its attribution to long-term air pollution exposure.
-
 
 
 

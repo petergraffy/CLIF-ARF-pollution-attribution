@@ -13,6 +13,7 @@ General rules:
 - Keep the dimension names exactly as written in the scaffold headers.
 - These templates now mirror the masking repo fragment style: join columns plus `offset`.
 - Replace the placeholder `0` offsets with the actual site-specific offsets returned by the external system.
+- The website-generated files used by sites should keep the fragment-family naming convention described in [keys/README.md](/Users/saborpete/Desktop/Peter/Postdoc/CLIF-ARF-pollution-attribution/keys/README.md).
 
 Expected fragment naming inside the project:
 - `key_county_year_Fragment_<id>.csv`
