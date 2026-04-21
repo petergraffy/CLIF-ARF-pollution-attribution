@@ -45,6 +45,7 @@ print(paste("File Type:", file_type))
 # Study window aligned to the current deterministic key universe.
 START_DATE <- as.POSIXct("2018-01-01 00:00:00", tz = "UTC")
 END_DATE   <- as.POSIXct("2024-12-31 23:59:59", tz = "UTC")
+RELEASE_YEARS <- 2018:2024
 
 # ARF phenotype parameters (from your prior script)
 WINDOW_H        <- 24     # ± hours around ICU in
@@ -122,9 +123,10 @@ get_tbl_from_dir <- function(tbl_base) {
 }
 
 normalize_county_fips <- function(x) {
-  # Expect 5-digit numeric string; anything else -> NA
+  # Normalize to a 5-digit numeric string with leading zero padding.
   x <- as.character(x)
   x <- str_replace_all(x, "[^0-9]", "")
+  x <- ifelse(nchar(x) > 0 & nchar(x) <= 5, str_pad(x, width = 5, side = "left", pad = "0"), x)
   x <- ifelse(nchar(x) == 5, x, NA_character_)
   x
 }
@@ -133,6 +135,29 @@ is_conus_county_fips <- function(x) {
   x <- normalize_county_fips(x)
   state_fips <- substr(x, 1, 2)
   !is.na(x) & !(state_fips %in% c("02", "15", "60", "66", "69", "72", "78"))
+}
+
+normalize_release_year <- function(x) {
+  y <- suppressWarnings(as.integer(x))
+  ifelse(!is.na(y) & y %in% RELEASE_YEARS, y, NA_integer_)
+}
+
+sanitize_release_dimensions <- function(df, dimension_cols) {
+  out <- df
+  if ("county_fips" %in% dimension_cols && "county_fips" %in% names(out)) {
+    out <- out %>% mutate(county_fips = normalize_county_fips(county_fips))
+  }
+  if ("year" %in% dimension_cols && "year" %in% names(out)) {
+    out <- out %>% mutate(year = normalize_release_year(year))
+  }
+  if ("county_fips" %in% dimension_cols && "county_fips" %in% names(out)) {
+    out <- out %>% filter(is_conus_county_fips(county_fips))
+  }
+  if ("year" %in% dimension_cols && "year" %in% names(out)) {
+    out <- out %>% filter(!is.na(year))
+  }
+  out %>%
+    filter(if_all(all_of(intersect(dimension_cols, names(out))), ~ !is.na(.x) & as.character(.x) != ""))
 }
 
 age_band_4 <- function(age) {
@@ -461,7 +486,7 @@ flags <- base %>%
     any_hypercap = coalesce(any_hyper_pair, FALSE),
     arf_criterion_met = any_hypox | any_hypercap,
     mixed_arf = any_hypox & any_hypercap,
-    year = year(admission_dttm),
+    year = normalize_release_year(year(admission_dttm)),
     age_band = age_band_4(age_years),
     sex = harmonize_sex(sex_category),
     race_group = harmonize_race(race_category),
@@ -544,6 +569,7 @@ flags <- flags %>%
 # Coverage metadata (year-level)
 coverage_year <- flags %>%
   filter(include_all_icu) %>%
+  filter(!is.na(year)) %>%
   mutate(date = as.Date(admission_dttm)) %>%
   group_by(year) %>%
   summarise(
@@ -556,6 +582,7 @@ coverage_year <- flags %>%
 # Primary county×year table
 site_county_year <- flags %>%
   filter(has_conus_county) %>%
+  filter(!is.na(year)) %>%
   group_by(county_fips, year) %>%
   summarise(
     A_all_ct  = sum(include_all_icu, na.rm = TRUE),
@@ -580,6 +607,7 @@ site_county_year <- flags %>%
 # Recommended stratified county×year×age×sex
 site_county_year_age_sex <- flags %>%
   filter(has_conus_county) %>%
+  filter(!is.na(year)) %>%
   mutate(age_band = as.character(age_band)) %>%
   group_by(county_fips, year, age_band, sex) %>%
   summarise(
@@ -595,6 +623,7 @@ site_county_year_age_sex <- flags %>%
 # Post-stratification cube without county to keep key size manageable while preserving
 # flexibility for subgroup burden summaries after pooled demasking.
 site_year_age_sex_race_ethnicity <- flags %>%
+  filter(!is.na(year)) %>%
   mutate(
     age_band = as.character(age_band),
     sex = as.character(sex),
@@ -706,14 +735,11 @@ apply_offset_mask <- function(obs_df, table_name, dimension_cols, count_cols, ex
   key_path <- key_matches[[1]]
   fragment_id <- stringr::str_match(basename(key_path), "Fragment_([A-Za-z0-9]+)\\.csv$")[,2]
 
-  obs_df <- obs_df %>%
-    mutate(across(all_of(intersect(dimension_cols, names(obs_df))), as.character))
-  if ("year" %in% names(obs_df)) {
-    obs_df <- obs_df %>% mutate(year = as.integer(year))
-  }
+  obs_df <- sanitize_release_dimensions(obs_df, dimension_cols)
 
   key_df <- readr::read_csv(key_path, show_col_types = FALSE) %>%
     rename(offset_n = any_of("offset")) %>%
+    sanitize_release_dimensions(dimension_cols = dimension_cols) %>%
     coerce_key_types(dimension_cols) %>%
     mutate(
       offset_n = as.integer(offset_n)
