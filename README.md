@@ -178,6 +178,7 @@ The workflow proceeds in the following order within `01_cohort_identification`:
    - Compute total ICU admissions by county-year
    - Compute ARF admissions by county-year
    - Compute ARF mortality counts
+   - Compute masked post-stratification tables for age-sex and pooled demographic analyses
    
 3. **CONSORT-style inclusion/exclusion table**
 
@@ -188,7 +189,6 @@ Detailed instructions are provided in: [code/README.md]
 ## Summary
 
 This repository implements a novel coverage-corrected geospatial modeling framework to extend incomplete ICU network data to national estimates of ARF burden. By jointly modeling ICU coverage, ARF incidence, and environmental exposures using Bayesian INLA-SPDE methods, this project produces county-level and national estimates of ARF and its attribution to long-term air pollution exposure.
-
 
 
 

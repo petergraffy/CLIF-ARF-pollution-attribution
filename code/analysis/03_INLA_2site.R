@@ -1,6 +1,6 @@
 # =====================================================================================
-# Illinois dry run (multi-site): pooled exports -> INLA-SPDE ARF per-capita + g-comp
-# Sites expected at: output/<SITE_NAME>/final/site_county_year_*.csv
+# Illinois dry run (multi-site): pooled demasked exports -> INLA-SPDE ARF per-capita + g-comp
+# Point this script to the pooled demasked county-year file created after external unmasking.
 # =====================================================================================
 
 suppressPackageStartupMessages({
@@ -29,83 +29,41 @@ years_use <- 2018:2024
 path_pm25 <- "exposome/pm25_county_year.csv"  # columns: GEOID, year, pm25_mean
 path_no2  <- "exposome/no2_county_year.csv"   # columns: GEOID, year, no2_mean
 
-# Root where site folders live
-sites_root <- "output"
+# Pooled demasked county-year file
+path_pooled_county_year <- file.path(
+  "output",
+  "pooled_demasked",
+  "pooled_demasked_site_county_year_mask_v20260320.csv"
+)
 
 # Output folder for this dry run
 out_dir <- file.path("output", "il_test_run_2sites")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # ---------------------------
-# 1) DISCOVER + READ SITE EXPORTS
+# 1) READ DEMASKED POOLED EXPORT
 # ---------------------------
 
-# Find all site final folders under output/*/final
-final_dirs <- list.dirs(sites_root, recursive = TRUE, full.names = TRUE)
-final_dirs <- final_dirs[grepl(paste0("^[^\\n]*", gsub("\\\\", "/", sites_root), "/[^/]+/final$"),
-                               gsub("\\\\", "/", final_dirs))]
-
-if (length(final_dirs) == 0) stop("No output/<SITE>/final folders found under: ", sites_root)
-
-# Helper: pick newest matching file
-newest_file <- function(dir, pattern) {
-  ff <- list.files(dir, pattern = pattern, full.names = TRUE)
-  if (length(ff) == 0) return(NA_character_)
-  ff[which.max(file.info(ff)$mtime)]
+if (!file.exists(path_pooled_county_year)) {
+  stop("Missing pooled demasked file: ", path_pooled_county_year,
+       ". Create or place the pooled demasked file first.")
 }
 
-site_files <- tibble(
-  final_dir = final_dirs,
-  site_id = basename(dirname(final_dirs)),
-  file_cty_year = vapply(final_dirs, newest_file, character(1), pattern = "^site_county_year_.*\\.csv$")
-) %>%
-  filter(!is.na(file_cty_year))
-
-if (nrow(site_files) == 0) stop("Found final folders but no site_county_year_*.csv within them.")
-
-message("Detected site exports:\n",
-        paste0(" - ", site_files$site_id, ": ", site_files$file_cty_year, collapse = "\n"))
-
-# Read and bind with site_id
-dat_sites <- purrr::map2_dfr(site_files$file_cty_year, site_files$site_id, function(fp, sid) {
-  read_csv(fp, show_col_types = FALSE) %>%
-    mutate(
-      site_id = sid,
-      county_fips = str_pad(as.character(county_fips), 5, pad = "0"),
-      year = as.integer(year)
-    )
-})
-
-# Sanity: required columns
-req_cols <- c("A_all_ct","A_elig_ct","Y_ct","D_ct","year","county_fips")
-stopifnot(all(req_cols %in% names(dat_sites)))
-
-# Restrict to Illinois + years
-dat_il_sites <- dat_sites %>%
-  filter(str_sub(county_fips, 1, 2) == "17") %>%
-  filter(year %in% years_use)
-
-stopifnot(nrow(dat_il_sites) > 0)
-
-# ---------------------------
-# 1b) POOL ACROSS SITES (county x year)
-# ---------------------------
-
-dat_il <- dat_il_sites %>%
-  group_by(county_fips, year) %>%
-  summarise(
-    A_all_ct  = sum(A_all_ct,  na.rm = TRUE),
-    A_elig_ct = sum(A_elig_ct, na.rm = TRUE),
-    Y_ct      = sum(Y_ct,      na.rm = TRUE),
-    D_ct      = sum(D_ct,      na.rm = TRUE),
-    D30_ct    = if ("D30_ct" %in% names(dat_il_sites)) sum(D30_ct, na.rm = TRUE) else NA_real_,
-    n_sites_reporting = n_distinct(site_id),
-    .groups = "drop"
+dat_il <- read_csv(path_pooled_county_year, show_col_types = FALSE) %>%
+  mutate(
+    county_fips = str_pad(as.character(county_fips), 5, pad = "0"),
+    year = as.integer(year)
   ) %>%
+  filter(str_sub(county_fips, 1, 2) == "17") %>%
+  filter(year %in% years_use) %>%
   mutate(
     omega = ifelse(A_all_ct > 0, A_elig_ct / A_all_ct, NA_real_),
     omega = pmin(pmax(omega, 1e-6), 1)
   )
+
+req_cols <- c("A_all_ct","A_elig_ct","Y_ct","D_ct","year","county_fips")
+stopifnot(all(req_cols %in% names(dat_il)))
+stopifnot(nrow(dat_il) > 0)
 
 # ---------------------------
 # 2) ACS POPULATION (N_ct)
@@ -306,7 +264,7 @@ p1 <- ggplot(map_df) +
   geom_sf(aes(fill = excess_per_100k_annual), color = "white", linewidth = 0.1) +
   labs(
     title = "Illinois: Estimated excess ARF attributable to pollution",
-    subtitle = "Two-site pooled dry run (UCMC + NU)",
+    subtitle = "Pooled demasked dry run",
     fill = "Excess ARF per 100k (annual)"
   ) +
   theme_minimal(base_size = 12)

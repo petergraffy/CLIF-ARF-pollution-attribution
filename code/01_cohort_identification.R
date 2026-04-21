@@ -42,9 +42,9 @@ print(paste("Site Name:", site_name))
 print(paste("Tables Path:", tables_path))
 print(paste("File Type:", file_type))
 
-# Study window (as in SAP; adjust end year to 2025 if needed)
+# Study window aligned to the current deterministic key universe.
 START_DATE <- as.POSIXct("2018-01-01 00:00:00", tz = "UTC")
-END_DATE   <- as.POSIXct("2025-12-31 23:59:59", tz = "UTC")
+END_DATE   <- as.POSIXct("2024-12-31 23:59:59", tz = "UTC")
 
 # ARF phenotype parameters (from your prior script)
 WINDOW_H        <- 24     # ± hours around ICU in
@@ -63,6 +63,7 @@ export_stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
 
 out_site_county_year      <- file.path(out_dir, glue("site_county_year_{site_name}_{export_stamp}.csv"))
 out_site_county_year_as   <- file.path(out_dir, glue("site_county_year_age_sex_{site_name}_{export_stamp}.csv"))
+out_site_year_demo        <- file.path(out_dir, glue("site_year_age_sex_race_ethnicity_{site_name}_{export_stamp}.csv"))
 out_site_qc               <- file.path(out_dir, glue("site_qc_summary_{site_name}_{export_stamp}.csv"))
 
 # ------------------------------- 1) IO helpers ---------------------------------------------------
@@ -128,11 +129,48 @@ normalize_county_fips <- function(x) {
   x
 }
 
+is_conus_county_fips <- function(x) {
+  x <- normalize_county_fips(x)
+  state_fips <- substr(x, 1, 2)
+  !is.na(x) & !(state_fips %in% c("02", "15", "60", "66", "69", "72", "78"))
+}
+
 age_band_4 <- function(age) {
   cut(age,
       breaks = c(18, 40, 65, 75, Inf),
       right = FALSE,
       labels = c("18-39", "40-64", "65-74", "75+"))
+}
+
+harmonize_sex <- function(x) {
+  x <- str_to_lower(str_trim(as.character(x)))
+  case_when(
+    x %in% c("female", "f") ~ "Female",
+    x %in% c("male", "m") ~ "Male",
+    TRUE ~ "Other/Unknown"
+  )
+}
+
+harmonize_race <- function(x) {
+  x <- str_to_lower(str_squish(as.character(x)))
+  case_when(
+    str_detect(x, "american indian|alaska native|native american|aian") ~ "AIAN",
+    str_detect(x, "asian") ~ "Asian",
+    str_detect(x, "black|african") ~ "Black",
+    str_detect(x, "hawaiian|pacific") ~ "NHPI",
+    str_detect(x, "white") ~ "White",
+    TRUE ~ "Other/Unknown"
+  )
+}
+
+harmonize_ethnicity <- function(x) {
+  x <- str_to_lower(str_squish(as.character(x)))
+  case_when(
+    str_detect(x, "hispanic|latino") ~ "Hispanic",
+    str_detect(x, "non[- ]?hispanic|not hispanic") ~ "Non-Hispanic",
+    is.na(x) | x == "" | x %in% c("unknown", "declined", "refused", "unable to obtain", "other") ~ "Other",
+    TRUE ~ "Other"
+  )
 }
 
 # ------------------------------- 2) Load minimal CLIF tables ------------------------------------
@@ -425,8 +463,12 @@ flags <- base %>%
     mixed_arf = any_hypox & any_hypercap,
     year = year(admission_dttm),
     age_band = age_band_4(age_years),
+    sex = harmonize_sex(sex_category),
+    race_group = harmonize_race(race_category),
+    ethnicity_group = harmonize_ethnicity(ethnicity_category),
     county_fips = normalize_county_fips(county_code),
-    missing_county = is.na(county_fips)
+    missing_county = is.na(county_fips),
+    conus_county = is_conus_county_fips(county_fips)
   )
 
 # Inclusion mask (this defines eligible ICU denominator A_ct)
@@ -435,9 +477,10 @@ flags <- flags %>%
   mutate(
     county_fips = normalize_county_fips(county_code),
     has_county  = !is.na(county_fips),
+    has_conus_county = has_county & is_conus_county_fips(county_fips),
     
-    # ICU base inclusion for denominator: adult + ICU LOS>=24h + county present
-    include_all_icu = adult & icu_24h & has_county,
+    # ICU base inclusion for denominator: adult + ICU LOS>=24h + CONUS county present
+    include_all_icu = adult & icu_24h & has_conus_county,
     
     # Phenotype eligibility: data rule only (ABG OR continuous SpO2) within ±24h
     include_elig = include_all_icu & meets_data_rule,
@@ -512,6 +555,7 @@ coverage_year <- flags %>%
 
 # Primary county×year table
 site_county_year <- flags %>%
+  filter(has_conus_county) %>%
   group_by(county_fips, year) %>%
   summarise(
     A_all_ct  = sum(include_all_icu, na.rm = TRUE),
@@ -520,11 +564,12 @@ site_county_year <- flags %>%
     D_ct      = sum(include_arf & in_hosp_death == 1L, na.rm = TRUE),
     D30_ct    = sum(include_arf & death_30d == 1L, na.rm = TRUE),
     
-    # QC-only (should be zero if has_county enforced in include_* flags)
-    A_all_missing_county  = sum(include_all_icu & !has_county, na.rm = TRUE),
-    A_elig_missing_county = sum(include_elig & !has_county, na.rm = TRUE),
-    Y_missing_county      = sum(include_arf & !has_county, na.rm = TRUE),
-    D_missing_county      = sum(include_arf & in_hosp_death == 1L & !has_county, na.rm = TRUE),
+    # QC-only; these are zero in the released CONUS table because non-CONUS and missing
+    # counties are excluded before grouping.
+    A_all_missing_county  = 0L,
+    A_elig_missing_county = 0L,
+    Y_missing_county      = 0L,
+    D_missing_county      = 0L,
     
     .groups = "drop"
   ) %>%
@@ -534,8 +579,8 @@ site_county_year <- flags %>%
 
 # Recommended stratified county×year×age×sex
 site_county_year_age_sex <- flags %>%
-  mutate(sex = as.character(sex_category),
-         age_band = as.character(age_band)) %>%
+  filter(has_conus_county) %>%
+  mutate(age_band = as.character(age_band)) %>%
   group_by(county_fips, year, age_band, sex) %>%
   summarise(
     A_all_ctg  = sum(include_all_icu, na.rm = TRUE),
@@ -546,6 +591,27 @@ site_county_year_age_sex <- flags %>%
   ) %>%
   mutate(site_name = site_name) %>%
   arrange(year, county_fips, age_band, sex)
+
+# Post-stratification cube without county to keep key size manageable while preserving
+# flexibility for subgroup burden summaries after pooled demasking.
+site_year_age_sex_race_ethnicity <- flags %>%
+  mutate(
+    age_band = as.character(age_band),
+    sex = as.character(sex),
+    race_group = as.character(race_group),
+    ethnicity_group = as.character(ethnicity_group)
+  ) %>%
+  group_by(year, age_band, sex, race_group, ethnicity_group) %>%
+  summarise(
+    A_all_n  = sum(include_all_icu, na.rm = TRUE),
+    A_elig_n = sum(include_elig, na.rm = TRUE),
+    Y_n      = sum(include_arf, na.rm = TRUE),
+    D_n      = sum(include_arf & in_hosp_death == 1L, na.rm = TRUE),
+    D30_n    = sum(include_arf & death_30d == 1L, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(site_name = site_name) %>%
+  arrange(year, age_band, sex, race_group, ethnicity_group)
 
 # ------------------------------- 10) QC summary --------------------------------------------------
 
@@ -586,6 +652,7 @@ qc <- tibble(
   
   # Geography missingness (QC only; should be ~0 because include_all_icu requires county)
   n_missing_county_all_icu = sum(flags$include_all_icu & flags$missing_county, na.rm = TRUE),
+  n_non_conus_county_all_icu = sum(flags$adult & flags$icu_24h & flags$has_county & !flags$conus_county, na.rm = TRUE),
   
   # Mortality provenance among ARF
   n_arf_deaths_in_hosp = sum(flags$include_arf & flags$in_hosp_death == 1L, na.rm = TRUE),
@@ -602,140 +669,126 @@ qc <- qc %>%
   )
 
 # ================================================================================================
-# OFFSET MASKING CHUNK (DROP-IN)
-# Place this AFTER site_county_year and site_county_year_age_sex are created,
-# and BEFORE write_csv() is called for those two export tables.
+# OFFSET MASKING
+# Key design follows the exported table dimensions exactly so the coordinator can demask
+# whichever sites actually return data and still preserve post-stratification flexibility.
 # ================================================================================================
 
-mask_version <- "mask_v20260320"
-offset_key_dir <- file.path("input", "offset_keys")
-
-offset_key_county_year_path <- file.path(
-  offset_key_dir,
-  "site_county_year",
-  paste0("offset_key_site_county_year_", site_name, "_", mask_version, ".csv")
+keys_dir <- file.path("keys")
+key_file_basename <- c(
+  site_county_year = "key_county_year",
+  site_county_year_age_sex = "key_county_year_age_sex",
+  site_year_age_sex_race_ethnicity = "key_year_age_sex_race_ethnicity"
 )
 
-offset_key_county_year_age_sex_path <- file.path(
-  offset_key_dir,
-  "site_county_year_age_sex",
-  paste0("offset_key_site_county_year_age_sex_", site_name, "_", mask_version, ".csv")
-)
-
-if (!file.exists(offset_key_county_year_path)) {
-  stop("Missing offset key file: ", offset_key_county_year_path)
+coerce_key_types <- function(df, dimension_cols) {
+  for (col in dimension_cols) {
+    if (!col %in% names(df)) next
+    if (inherits(df[[col]], "numeric") || inherits(df[[col]], "integer")) {
+      df[[col]] <- as.integer(df[[col]])
+    } else {
+      df[[col]] <- as.character(df[[col]])
+    }
+  }
+  df
 }
-if (!file.exists(offset_key_county_year_age_sex_path)) {
-  stop("Missing offset key file: ", offset_key_county_year_age_sex_path)
+
+apply_offset_mask <- function(obs_df, table_name, dimension_cols, count_cols, extra_cols = NULL) {
+  site_name_value <- site_name
+  key_pattern <- paste0("^", key_file_basename[[table_name]], "_Fragment_.*\\.csv$")
+  key_matches <- list.files(keys_dir, pattern = key_pattern, full.names = TRUE)
+  if (length(key_matches) == 0) {
+    stop("Missing key fragment for ", table_name, ". Expected ", key_file_basename[[table_name]], "_Fragment_*.csv in ", keys_dir)
+  }
+  if (length(key_matches) > 1) {
+    stop("Multiple key fragments found for ", table_name, ": ", paste(basename(key_matches), collapse = ", "))
+  }
+  key_path <- key_matches[[1]]
+  fragment_id <- stringr::str_match(basename(key_path), "Fragment_([A-Za-z0-9]+)\\.csv$")[,2]
+
+  obs_df <- obs_df %>%
+    mutate(across(all_of(intersect(dimension_cols, names(obs_df))), as.character))
+  if ("year" %in% names(obs_df)) {
+    obs_df <- obs_df %>% mutate(year = as.integer(year))
+  }
+
+  key_df <- readr::read_csv(key_path, show_col_types = FALSE) %>%
+    rename(offset_n = any_of("offset")) %>%
+    coerce_key_types(dimension_cols) %>%
+    mutate(
+      offset_n = as.integer(offset_n)
+    )
+
+  if (!"offset_n" %in% names(key_df)) {
+    stop("Key fragment ", basename(key_path), " is missing an offset column.")
+  }
+
+  dup_keys <- key_df %>%
+    count(across(all_of(dimension_cols)), name = "n_matches") %>%
+    filter(n_matches > 1)
+  if (nrow(dup_keys) > 0) {
+    stop(
+      "Key fragment ", basename(key_path), " has duplicate rows for ", table_name,
+      ". Example duplicates: ", paste(capture.output(print(head(dup_keys, 5))), collapse = " ")
+    )
+  }
+
+  missing_from_key <- obs_df %>%
+    anti_join(key_df %>% select(all_of(dimension_cols)), by = dimension_cols)
+  if (nrow(missing_from_key) > 0) {
+    stop(
+      "Key fragment ", basename(key_path), " did not cover all observed rows for ", table_name,
+      ". Missing examples: ", paste(capture.output(print(head(missing_from_key %>% select(all_of(dimension_cols)), 5))), collapse = " ")
+    )
+  }
+
+  out <- key_df %>%
+    select(any_of(c("cell_id", dimension_cols, "offset_n"))) %>%
+    left_join(obs_df, by = dimension_cols) %>%
+    mutate(
+      site_name = site_name_value,
+      across(all_of(count_cols), ~ coalesce(as.integer(.x), 0L) + offset_n),
+      mask_version = ifelse(is.na(fragment_id), basename(key_path), paste0("Fragment_", fragment_id))
+    ) %>%
+    select(any_of(c(
+      dimension_cols,
+      count_cols,
+      "site_name",
+      extra_cols,
+      "mask_version"
+    )))
+  out
 }
 
-key_county_year <- readr::read_csv(offset_key_county_year_path, show_col_types = FALSE) %>%
-  mutate(
-    county_fips = as.character(county_fips),
-    year = as.integer(year),
-    offset_n = as.integer(offset_n),
-    site_name = as.character(site_name),
-    mask_version = as.character(mask_version)
-  )
+site_county_year <- apply_offset_mask(
+  obs_df = site_county_year,
+  table_name = "site_county_year",
+  dimension_cols = c("county_fips", "year"),
+  count_cols = c(
+    "A_all_ct", "A_elig_ct", "Y_ct", "D_ct", "D30_ct",
+    "A_all_missing_county", "A_elig_missing_county", "Y_missing_county", "D_missing_county"
+  ),
+  extra_cols = c("first_date", "last_date", "coverage_days")
+) %>%
+  arrange(year, county_fips)
 
-key_county_year_age_sex <- readr::read_csv(offset_key_county_year_age_sex_path, show_col_types = FALSE) %>%
-  mutate(
-    county_fips = as.character(county_fips),
-    year = as.integer(year),
-    age_band = as.character(age_band),
-    sex = as.character(sex),
-    offset_n = as.integer(offset_n),
-    site_name = as.character(site_name),
-    mask_version = as.character(mask_version)
-  )
+site_county_year_age_sex <- apply_offset_mask(
+  obs_df = site_county_year_age_sex,
+  table_name = "site_county_year_age_sex",
+  dimension_cols = c("county_fips", "year", "age_band", "sex"),
+  count_cols = c("A_all_ctg", "A_elig_ctg", "Y_ctg", "D_ctg")
+) %>%
+  arrange(year, county_fips, age_band, sex)
 
-# -------------------------------
-# Mask site_county_year
-# -------------------------------
+site_year_age_sex_race_ethnicity <- apply_offset_mask(
+  obs_df = site_year_age_sex_race_ethnicity,
+  table_name = "site_year_age_sex_race_ethnicity",
+  dimension_cols = c("year", "age_band", "sex", "race_group", "ethnicity_group"),
+  count_cols = c("A_all_n", "A_elig_n", "Y_n", "D_n", "D30_n")
+) %>%
+  arrange(year, age_band, sex, race_group, ethnicity_group)
 
-site_county_year_obs <- site_county_year %>%
-  mutate(
-    county_fips = as.character(county_fips),
-    year = as.integer(year)
-  ) %>%
-  select(
-    county_fips, year,
-    A_all_ct, A_elig_ct, Y_ct, D_ct, D30_ct,
-    A_all_missing_county, A_elig_missing_county, Y_missing_county, D_missing_county,
-    first_date, last_date, coverage_days
-  )
-
-site_county_year <- key_county_year %>%
-  select(cell_id, county_fips, year, offset_n, mask_version) %>%
-  left_join(site_county_year_obs, by = c("county_fips", "year")) %>%
-  mutate(
-    site_name = site_name,
-    across(
-      .cols = c(
-        A_all_ct, A_elig_ct, Y_ct, D_ct, D30_ct,
-        A_all_missing_county, A_elig_missing_county, Y_missing_county, D_missing_county
-      ),
-      .fns = ~ coalesce(as.integer(.x), 0L)
-    ),
-    # add the same offset to all cell-level count fields in this table
-    A_all_ct              = A_all_ct + offset_n,
-    A_elig_ct             = A_elig_ct + offset_n,
-    Y_ct                  = Y_ct + offset_n,
-    D_ct                  = D_ct + offset_n,
-    D30_ct                = D30_ct + offset_n,
-    A_all_missing_county  = A_all_missing_county + offset_n,
-    A_elig_missing_county = A_elig_missing_county + offset_n,
-    Y_missing_county      = Y_missing_county + offset_n,
-    D_missing_county      = D_missing_county + offset_n
-  ) %>%
-  arrange(year, county_fips) %>%
-  select(
-    site_name, county_fips, year,
-    A_all_ct, A_elig_ct, Y_ct, D_ct, D30_ct,
-    A_all_missing_county, A_elig_missing_county, Y_missing_county, D_missing_county,
-    first_date, last_date, coverage_days,
-    mask_version
-  )
-
-# -------------------------------
-# Mask site_county_year_age_sex
-# -------------------------------
-
-site_county_year_age_sex_obs <- site_county_year_age_sex %>%
-  mutate(
-    county_fips = as.character(county_fips),
-    year = as.integer(year),
-    age_band = as.character(age_band),
-    sex = as.character(sex)
-  ) %>%
-  select(
-    county_fips, year, age_band, sex,
-    A_all_ctg, A_elig_ctg, Y_ctg, D_ctg
-  )
-
-site_county_year_age_sex <- key_county_year_age_sex %>%
-  select(cell_id, county_fips, year, age_band, sex, offset_n, mask_version) %>%
-  left_join(site_county_year_age_sex_obs, by = c("county_fips", "year", "age_band", "sex")) %>%
-  mutate(
-    site_name = site_name,
-    across(
-      .cols = c(A_all_ctg, A_elig_ctg, Y_ctg, D_ctg),
-      .fns = ~ coalesce(as.integer(.x), 0L)
-    ),
-    # add the same offset to all cell-level count fields in this table
-    A_all_ctg  = A_all_ctg + offset_n,
-    A_elig_ctg = A_elig_ctg + offset_n,
-    Y_ctg      = Y_ctg + offset_n,
-    D_ctg      = D_ctg + offset_n
-  ) %>%
-  arrange(year, county_fips, age_band, sex) %>%
-  select(
-    site_name, county_fips, year, age_band, sex,
-    A_all_ctg, A_elig_ctg, Y_ctg, D_ctg,
-    mask_version
-  )
-
-message("✅ Offset masking applied to site_county_year and site_county_year_age_sex")
+message("✅ Offset masking applied to all exported count tables")
 
 
 # ------------------------------- 11) Write outputs -----------------------------------------------
@@ -743,11 +796,13 @@ message("✅ Offset masking applied to site_county_year and site_county_year_age
 # Important: these exports are aggregated only; no IDs.
 readr::write_csv(site_county_year, out_site_county_year, na = "")
 readr::write_csv(site_county_year_age_sex, out_site_county_year_as, na = "")
+readr::write_csv(site_year_age_sex_race_ethnicity, out_site_year_demo, na = "")
 readr::write_csv(qc, out_site_qc, na = "")
 
 message("✅ Done. Wrote PHI-safe exports:")
 message("  - ", out_site_county_year)
 message("  - ", out_site_county_year_as)
+message("  - ", out_site_year_demo)
 message("  - ", out_site_qc)
 
 # ------------------------------- 12) Optional: quick console sanity ------------------------------

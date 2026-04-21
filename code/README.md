@@ -11,9 +11,11 @@ This directory contains scripts for the project workflow. The general workflow c
    - Apply inclusion and exclusion criteria
    - Select required fields from each table
    - Produce a CONSORT-style diagram for patient selection
-   - Produce aggregated counts of ARF, ARF mortality, and post-stratification metrics by county
+   - Produce masked aggregated exports for:
+     - county-year burden modeling
+     - county-year age-sex post-stratification
+     - pooled year age-sex race-ethnicity post-stratification
+   - Automatically discover deterministic masking fragments in `keys/` if present
 
 **Once all code has been run, upload the entire output/final folder as-is to Box.**
-
-
 
